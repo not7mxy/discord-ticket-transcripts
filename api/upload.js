@@ -51,13 +51,12 @@ export async function POST(request) {
         }
 
         const blob = await put(filename, body, {
-            access: "public",
+            access: "private",
             contentType: "text/html; charset=utf-8",
             addRandomSuffix: true
         });
 
-        // Create a URL that goes through our Vercel viewer.
-        // This makes the browser render the HTML instead of downloading it.
+        // Create a URL that goes through our protected viewer.
         const origin = new URL(request.url).origin;
 
         const viewUrl =
