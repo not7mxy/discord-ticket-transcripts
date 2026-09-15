@@ -1,191 +1,174 @@
-import crypto from "crypto";
+import { get } from "@vercel/blob";
 
-export default async function handler(request) {
+import {
+    getSession
+} from "../lib/auth.js";
+
+export async function GET(request) {
     try {
         const requestUrl = new URL(request.url);
-        const code = requestUrl.searchParams.get("code");
-        const state = requestUrl.searchParams.get("state");
+        const blobUrl =
+            requestUrl.searchParams.get("url");
 
-        if (!code || !state) {
-            return new Response("Invalid Discord authentication response.", {
-                status: 400,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
-            });
-        }
-
-        // Read the OAuth state cookie.
-        const cookieHeader = request.headers.get("cookie") || "";
-
-        const stateCookie = cookieHeader
-            .split(";")
-            .map(cookie => cookie.trim())
-            .find(cookie => cookie.startsWith("oauth_state="));
-
-        if (!stateCookie) {
+        if (!blobUrl) {
             return new Response(
-                "Authentication session expired. Please try again.",
+                "Missing transcript URL.",
                 {
                     status: 400,
                     headers: {
-                        "Content-Type": "text/plain; charset=utf-8"
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
                     }
                 }
             );
         }
 
-        const savedState = decodeURIComponent(
-            stateCookie.substring("oauth_state=".length)
-        );
+        /*
+         * Check the staff session BEFORE touching
+         * the private Blob.
+         */
+        const session =
+            getSession(request);
 
-        // Prevent OAuth CSRF attacks.
-        if (
-            !crypto.timingSafeEqual(
-                Buffer.from(state),
-                Buffer.from(savedState)
-            )
-        ) {
-            return new Response("Invalid authentication state.", {
-                status: 403,
+        if (!session) {
+            const loginUrl =
+                `/api/auth-discord?return=${encodeURIComponent(
+                    requestUrl.pathname +
+                    requestUrl.search
+                )}`;
+
+            return new Response(null, {
+                status: 302,
                 headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
+                    Location: loginUrl
                 }
             });
         }
 
-        const clientId = process.env.DISCORD_CLIENT_ID;
-        const clientSecret = process.env.DISCORD_CLIENT_SECRET;
-        const redirectUri = process.env.DISCORD_REDIRECT_URI;
+        let parsedUrl;
 
-        if (!clientId || !clientSecret || !redirectUri) {
-            console.error("Discord OAuth environment variables are missing.");
-
+        try {
+            parsedUrl = new URL(blobUrl);
+        } catch {
             return new Response(
-                "Discord authentication is not configured correctly.",
+                "Invalid transcript URL.",
                 {
-                    status: 500,
+                    status: 400,
                     headers: {
-                        "Content-Type": "text/plain; charset=utf-8"
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
                     }
                 }
             );
         }
-
-        // Exchange the authorization code for an OAuth access token.
-        const tokenResponse = await fetch(
-            "https://discord.com/api/oauth2/token",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded"
-                },
-                body: new URLSearchParams({
-                    client_id: clientId,
-                    client_secret: clientSecret,
-                    grant_type: "authorization_code",
-                    code,
-                    redirect_uri: redirectUri
-                })
-            }
-        );
-
-        if (!tokenResponse.ok) {
-            const errorText = await tokenResponse.text();
-
-            console.error(
-                "Discord token exchange failed:",
-                errorText
-            );
-
-            return new Response(
-                "Unable to authenticate with Discord.",
-                {
-                    status: 502,
-                    headers: {
-                        "Content-Type": "text/plain; charset=utf-8"
-                    }
-                }
-            );
-        }
-
-        const tokenData = await tokenResponse.json();
-
-        if (!tokenData.access_token) {
-            return new Response(
-                "Discord did not provide an access token.",
-                {
-                    status: 502,
-                    headers: {
-                        "Content-Type": "text/plain; charset=utf-8"
-                    }
-                }
-            );
-        }
-
-        // Get the Discord account associated with the OAuth token.
-        const userResponse = await fetch(
-            "https://discord.com/api/users/@me",
-            {
-                headers: {
-                    Authorization: `Bearer ${tokenData.access_token}`
-                }
-            }
-        );
-
-        if (!userResponse.ok) {
-            return new Response(
-                "Unable to retrieve your Discord account.",
-                {
-                    status: 502,
-                    headers: {
-                        "Content-Type": "text/plain; charset=utf-8"
-                    }
-                }
-            );
-        }
-
-        const user = await userResponse.json();
 
         /*
-         * At this point we know which Discord account authenticated.
-         *
-         * We are NOT granting transcript access yet.
-         *
-         * The next system will check:
-         *
-         * 1. Is this user in your Discord server?
-         * 2. Does this user have the configured staff role?
-         *
-         * Only then will we create the authenticated session.
+         * Only allow Vercel private Blob storage.
          */
-
-        console.log(
-            `Discord OAuth successful for user ${user.id}`
-        );
-
-        return new Response(
-            `Discord authentication successful for ${user.username}.`,
-            {
-                status: 200,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
+        if (
+            !parsedUrl.hostname.endsWith(
+                ".private.blob.vercel-storage.com"
+            )
+        ) {
+            return new Response(
+                "Invalid transcript URL.",
+                {
+                    status: 400,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
                 }
+            );
+        }
+
+        const pathname =
+            parsedUrl.pathname.replace(/^\/+/, "");
+
+        if (!pathname) {
+            return new Response(
+                "Invalid transcript path.",
+                {
+                    status: 400,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
+
+        /*
+         * Ticket transcripts uploaded by our bot are
+         * stored underneath tickets/.
+         */
+        if (!pathname.startsWith("tickets/")) {
+            return new Response(
+                "Invalid transcript path.",
+                {
+                    status: 403,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
+
+        /*
+         * Read directly from PRIVATE Blob storage.
+         *
+         * The browser never receives the private Blob URL.
+         */
+        const result = await get(pathname, {
+            access: "private",
+            useCache: false
+        });
+
+        if (!result) {
+            return new Response(
+                "Transcript not found.",
+                {
+                    status: 404,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
+
+        return new Response(result.stream, {
+            status: 200,
+            headers: {
+                "Content-Type":
+                    result.blob.contentType ||
+                    "text/html; charset=utf-8",
+
+                "Content-Disposition":
+                    "inline",
+
+                "X-Content-Type-Options":
+                    "nosniff",
+
+                "Cache-Control":
+                    "private, no-store"
             }
-        );
+        });
 
     } catch (error) {
         console.error(
-            "Discord OAuth callback error:",
+            "Transcript viewer error:",
             error
         );
 
         return new Response(
-            "Unable to complete Discord authentication.",
+            "Unable to load transcript.",
             {
                 status: 500,
                 headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
+                    "Content-Type":
+                        "text/plain; charset=utf-8"
                 }
             }
         );
