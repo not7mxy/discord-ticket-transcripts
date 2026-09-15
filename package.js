@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@vercel/blob": "latest"
+    "@vercel/blob": "^2.6.1"
   }
 }
