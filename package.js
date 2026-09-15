@@ -2,6 +2,7 @@
   "name": "discord-ticket-transcripts",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "dependencies": {
     "@vercel/blob": "latest"
   }
