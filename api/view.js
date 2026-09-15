@@ -1,12 +1,15 @@
 import { get } from "@vercel/blob";
 
 import {
-    getSession
+    getSession,
+    isStaffMember
 } from "../lib/auth.js";
 
 export async function GET(request) {
     try {
-        const requestUrl = new URL(request.url);
+        const requestUrl =
+            new URL(request.url);
+
         const blobUrl =
             requestUrl.searchParams.get("url");
 
@@ -24,8 +27,7 @@ export async function GET(request) {
         }
 
         /*
-         * Check the staff session BEFORE touching
-         * the private Blob.
+         * Check the login session.
          */
         const session =
             getSession(request);
@@ -45,10 +47,36 @@ export async function GET(request) {
             });
         }
 
+        /*
+         * Check the user's current Discord
+         * staff role every time a transcript
+         * is opened.
+         */
+        const stillStaff =
+            await isStaffMember(
+                session.userId
+            );
+
+        if (!stillStaff) {
+            return new Response(
+                "Your staff access has been removed or you are no longer a member of the server.",
+                {
+                    status: 403,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8",
+                        "Cache-Control":
+                            "private, no-store"
+                    }
+                }
+            );
+        }
+
         let parsedUrl;
 
         try {
-            parsedUrl = new URL(blobUrl);
+            parsedUrl =
+                new URL(blobUrl);
         } catch {
             return new Response(
                 "Invalid transcript URL.",
@@ -63,7 +91,8 @@ export async function GET(request) {
         }
 
         /*
-         * Only allow Vercel private Blob storage.
+         * Only allow our private Vercel Blob
+         * storage domain.
          */
         if (
             !parsedUrl.hostname.endsWith(
@@ -83,7 +112,10 @@ export async function GET(request) {
         }
 
         const pathname =
-            parsedUrl.pathname.replace(/^\/+/, "");
+            parsedUrl.pathname.replace(
+                /^\/+/,
+                ""
+            );
 
         if (!pathname) {
             return new Response(
@@ -99,8 +131,7 @@ export async function GET(request) {
         }
 
         /*
-         * Ticket transcripts uploaded by our bot are
-         * stored underneath tickets/.
+         * Only allow transcript objects.
          */
         if (!pathname.startsWith("tickets/")) {
             return new Response(
@@ -116,14 +147,16 @@ export async function GET(request) {
         }
 
         /*
-         * Read directly from PRIVATE Blob storage.
+         * Read the private Blob server-side.
          *
-         * The browser never receives the private Blob URL.
+         * The private Blob URL itself is never
+         * exposed to the browser.
          */
-        const result = await get(pathname, {
-            access: "private",
-            useCache: false
-        });
+        const result =
+            await get(pathname, {
+                access: "private",
+                useCache: false
+            });
 
         if (!result) {
             return new Response(
@@ -138,23 +171,26 @@ export async function GET(request) {
             );
         }
 
-        return new Response(result.stream, {
-            status: 200,
-            headers: {
-                "Content-Type":
-                    result.blob.contentType ||
-                    "text/html; charset=utf-8",
+        return new Response(
+            result.stream,
+            {
+                status: 200,
+                headers: {
+                    "Content-Type":
+                        result.blob.contentType ||
+                        "text/html; charset=utf-8",
 
-                "Content-Disposition":
-                    "inline",
+                    "Content-Disposition":
+                        "inline",
 
-                "X-Content-Type-Options":
-                    "nosniff",
+                    "X-Content-Type-Options":
+                        "nosniff",
 
-                "Cache-Control":
-                    "private, no-store"
+                    "Cache-Control":
+                        "private, no-store"
+                }
             }
-        });
+        );
 
     } catch (error) {
         console.error(
