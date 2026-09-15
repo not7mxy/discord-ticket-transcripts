@@ -1,9 +1,8 @@
-import crypto from "crypto";
-
 import {
     getCookie,
     createSession,
     createSessionCookie,
+    isStaffMember,
     STATE_COOKIE
 } from "../lib/auth.js";
 
@@ -12,14 +11,17 @@ function unauthorized(message) {
         status: 403,
         headers: {
             "Content-Type":
-                "text/plain; charset=utf-8"
+                "text/plain; charset=utf-8",
+            "Cache-Control":
+                "no-store"
         }
     });
 }
 
 export async function GET(request) {
     try {
-        const requestUrl = new URL(request.url);
+        const requestUrl =
+            new URL(request.url);
 
         const code =
             requestUrl.searchParams.get("code");
@@ -89,25 +91,13 @@ export async function GET(request) {
         const redirectUri =
             process.env.DISCORD_REDIRECT_URI;
 
-        const guildId =
-            process.env.DISCORD_GUILD_ID;
-
-        const botToken =
-            process.env.DISCORD_BOT_TOKEN;
-
-        const staffRoleId =
-            process.env.STAFF_ROLE_ID;
-
         if (
             !clientId ||
             !clientSecret ||
-            !redirectUri ||
-            !guildId ||
-            !botToken ||
-            !staffRoleId
+            !redirectUri
         ) {
             console.error(
-                "Missing Discord authentication environment variables."
+                "Missing Discord OAuth environment variables."
             );
 
             return new Response(
@@ -123,25 +113,28 @@ export async function GET(request) {
         }
 
         /*
-         * Exchange OAuth code for an access token.
+         * Exchange the Discord OAuth authorization code.
          */
-        const tokenResponse = await fetch(
-            "https://discord.com/api/oauth2/token",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type":
-                        "application/x-www-form-urlencoded"
-                },
-                body: new URLSearchParams({
-                    client_id: clientId,
-                    client_secret: clientSecret,
-                    grant_type: "authorization_code",
-                    code,
-                    redirect_uri: redirectUri
-                })
-            }
-        );
+        const tokenResponse =
+            await fetch(
+                "https://discord.com/api/oauth2/token",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+                    body: new URLSearchParams({
+                        client_id: clientId,
+                        client_secret: clientSecret,
+                        grant_type:
+                            "authorization_code",
+                        code,
+                        redirect_uri:
+                            redirectUri
+                    })
+                }
+            );
 
         if (!tokenResponse.ok) {
             console.error(
@@ -178,17 +171,18 @@ export async function GET(request) {
         }
 
         /*
-         * Get the Discord user.
+         * Get the Discord account.
          */
-        const userResponse = await fetch(
-            "https://discord.com/api/users/@me",
-            {
-                headers: {
-                    Authorization:
-                        `Bearer ${tokenData.access_token}`
+        const userResponse =
+            await fetch(
+                "https://discord.com/api/users/@me",
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${tokenData.access_token}`
+                    }
                 }
-            }
-        );
+            );
 
         if (!userResponse.ok) {
             return new Response(
@@ -207,52 +201,11 @@ export async function GET(request) {
             await userResponse.json();
 
         /*
-         * Ask Discord's bot API for this member's
-         * guild information and roles.
-         */
-        const memberResponse = await fetch(
-            `https://discord.com/api/v10/guilds/${guildId}/members/${user.id}`,
-            {
-                headers: {
-                    Authorization:
-                        `Bot ${botToken}`
-                }
-            }
-        );
-
-        if (memberResponse.status === 404) {
-            return unauthorized(
-                "You must be a member of the Discord server to view ticket transcripts."
-            );
-        }
-
-        if (!memberResponse.ok) {
-            console.error(
-                "Discord guild member lookup failed:",
-                await memberResponse.text()
-            );
-
-            return new Response(
-                "Unable to verify your Discord server membership.",
-                {
-                    status: 502,
-                    headers: {
-                        "Content-Type":
-                            "text/plain; charset=utf-8"
-                    }
-                }
-            );
-        }
-
-        const member =
-            await memberResponse.json();
-
-        /*
-         * Check the configured staff role.
+         * Verify the user currently has the
+         * configured staff role.
          */
         const hasStaffRole =
-            Array.isArray(member.roles) &&
-            member.roles.includes(staffRoleId);
+            await isStaffMember(user.id);
 
         if (!hasStaffRole) {
             return unauthorized(
@@ -263,8 +216,8 @@ export async function GET(request) {
         /*
          * Create our own signed session.
          *
-         * The Discord OAuth access token is NOT stored
-         * in the browser session.
+         * The Discord OAuth access token is NOT
+         * stored in the browser.
          */
         const session =
             createSession(user.id);
