@@ -1,18 +1,35 @@
-import { get } from "@vercel/blob";
+import crypto from "crypto";
 
 import {
-    getSession
+    getCookie,
+    createSession,
+    createSessionCookie,
+    STATE_COOKIE
 } from "../lib/auth.js";
+
+function unauthorized(message) {
+    return new Response(message, {
+        status: 403,
+        headers: {
+            "Content-Type":
+                "text/plain; charset=utf-8"
+        }
+    });
+}
 
 export async function GET(request) {
     try {
         const requestUrl = new URL(request.url);
-        const blobUrl =
-            requestUrl.searchParams.get("url");
 
-        if (!blobUrl) {
+        const code =
+            requestUrl.searchParams.get("code");
+
+        const returnedState =
+            requestUrl.searchParams.get("state");
+
+        if (!code || !returnedState) {
             return new Response(
-                "Missing transcript URL.",
+                "Invalid Discord authentication response.",
                 {
                     status: 400,
                     headers: {
@@ -23,73 +40,80 @@ export async function GET(request) {
             );
         }
 
-        /*
-         * Check the staff session BEFORE touching
-         * the private Blob.
-         */
-        const session =
-            getSession(request);
+        const stateCookie =
+            getCookie(request, STATE_COOKIE);
 
-        if (!session) {
-            const loginUrl =
-                `/api/auth-discord?return=${encodeURIComponent(
-                    requestUrl.pathname +
-                    requestUrl.search
-                )}`;
-
-            return new Response(null, {
-                status: 302,
-                headers: {
-                    Location: loginUrl
+        if (!stateCookie) {
+            return new Response(
+                "Authentication session expired. Please try again.",
+                {
+                    status: 400,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
                 }
-            });
+            );
         }
 
-        let parsedUrl;
+        let stateData;
 
         try {
-            parsedUrl = new URL(blobUrl);
+            stateData = JSON.parse(
+                Buffer.from(
+                    stateCookie,
+                    "base64url"
+                ).toString("utf8")
+            );
         } catch {
-            return new Response(
-                "Invalid transcript URL.",
-                {
-                    status: 400,
-                    headers: {
-                        "Content-Type":
-                            "text/plain; charset=utf-8"
-                    }
-                }
+            return unauthorized(
+                "Invalid authentication state."
             );
         }
 
-        /*
-         * Only allow Vercel private Blob storage.
-         */
         if (
-            !parsedUrl.hostname.endsWith(
-                ".private.blob.vercel-storage.com"
-            )
+            !stateData.state ||
+            stateData.state !== returnedState
         ) {
-            return new Response(
-                "Invalid transcript URL.",
-                {
-                    status: 400,
-                    headers: {
-                        "Content-Type":
-                            "text/plain; charset=utf-8"
-                    }
-                }
+            return unauthorized(
+                "Invalid authentication state."
             );
         }
 
-        const pathname =
-            parsedUrl.pathname.replace(/^\/+/, "");
+        const clientId =
+            process.env.DISCORD_CLIENT_ID;
 
-        if (!pathname) {
+        const clientSecret =
+            process.env.DISCORD_CLIENT_SECRET;
+
+        const redirectUri =
+            process.env.DISCORD_REDIRECT_URI;
+
+        const guildId =
+            process.env.DISCORD_GUILD_ID;
+
+        const botToken =
+            process.env.DISCORD_BOT_TOKEN;
+
+        const staffRoleId =
+            process.env.STAFF_ROLE_ID;
+
+        if (
+            !clientId ||
+            !clientSecret ||
+            !redirectUri ||
+            !guildId ||
+            !botToken ||
+            !staffRoleId
+        ) {
+            console.error(
+                "Missing Discord authentication environment variables."
+            );
+
             return new Response(
-                "Invalid transcript path.",
+                "Discord authentication is not configured correctly.",
                 {
-                    status: 400,
+                    status: 500,
                     headers: {
                         "Content-Type":
                             "text/plain; charset=utf-8"
@@ -99,14 +123,52 @@ export async function GET(request) {
         }
 
         /*
-         * Ticket transcripts uploaded by our bot are
-         * stored underneath tickets/.
+         * Exchange OAuth code for an access token.
          */
-        if (!pathname.startsWith("tickets/")) {
+        const tokenResponse = await fetch(
+            "https://discord.com/api/oauth2/token",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/x-www-form-urlencoded"
+                },
+                body: new URLSearchParams({
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                    grant_type: "authorization_code",
+                    code,
+                    redirect_uri: redirectUri
+                })
+            }
+        );
+
+        if (!tokenResponse.ok) {
+            console.error(
+                "Discord token exchange failed:",
+                await tokenResponse.text()
+            );
+
             return new Response(
-                "Invalid transcript path.",
+                "Unable to authenticate with Discord.",
                 {
-                    status: 403,
+                    status: 502,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
+
+        const tokenData =
+            await tokenResponse.json();
+
+        if (!tokenData.access_token) {
+            return new Response(
+                "Discord did not provide an access token.",
+                {
+                    status: 502,
                     headers: {
                         "Content-Type":
                             "text/plain; charset=utf-8"
@@ -116,54 +178,119 @@ export async function GET(request) {
         }
 
         /*
-         * Read directly from PRIVATE Blob storage.
+         * Get the Discord user.
+         */
+        const userResponse = await fetch(
+            "https://discord.com/api/users/@me",
+            {
+                headers: {
+                    Authorization:
+                        `Bearer ${tokenData.access_token}`
+                }
+            }
+        );
+
+        if (!userResponse.ok) {
+            return new Response(
+                "Unable to retrieve your Discord account.",
+                {
+                    status: 502,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
+
+        const user =
+            await userResponse.json();
+
+        /*
+         * Ask Discord's bot API for this member's
+         * guild information and roles.
+         */
+        const memberResponse = await fetch(
+            `https://discord.com/api/v10/guilds/${guildId}/members/${user.id}`,
+            {
+                headers: {
+                    Authorization:
+                        `Bot ${botToken}`
+                }
+            }
+        );
+
+        if (memberResponse.status === 404) {
+            return unauthorized(
+                "You must be a member of the Discord server to view ticket transcripts."
+            );
+        }
+
+        if (!memberResponse.ok) {
+            console.error(
+                "Discord guild member lookup failed:",
+                await memberResponse.text()
+            );
+
+            return new Response(
+                "Unable to verify your Discord server membership.",
+                {
+                    status: 502,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
+
+        const member =
+            await memberResponse.json();
+
+        /*
+         * Check the configured staff role.
+         */
+        const hasStaffRole =
+            Array.isArray(member.roles) &&
+            member.roles.includes(staffRoleId);
+
+        if (!hasStaffRole) {
+            return unauthorized(
+                "You are not authorized to view ticket transcripts."
+            );
+        }
+
+        /*
+         * Create our own signed session.
          *
-         * The browser never receives the private Blob URL.
+         * The Discord OAuth access token is NOT stored
+         * in the browser session.
          */
-        const result = await get(pathname, {
-            access: "private",
-            useCache: false
-        });
+        const session =
+            createSession(user.id);
 
-        if (!result) {
-            return new Response(
-                "Transcript not found.",
-                {
-                    status: 404,
-                    headers: {
-                        "Content-Type":
-                            "text/plain; charset=utf-8"
-                    }
-                }
-            );
-        }
+        const returnPath =
+            typeof stateData.returnPath === "string"
+                ? stateData.returnPath
+                : "/";
 
-        return new Response(result.stream, {
-            status: 200,
+        return new Response(null, {
+            status: 302,
             headers: {
-                "Content-Type":
-                    result.blob.contentType ||
-                    "text/html; charset=utf-8",
-
-                "Content-Disposition":
-                    "inline",
-
-                "X-Content-Type-Options":
-                    "nosniff",
-
-                "Cache-Control":
-                    "private, no-store"
+                Location: returnPath,
+                "Set-Cookie":
+                    createSessionCookie(session)
             }
         });
 
     } catch (error) {
         console.error(
-            "Transcript viewer error:",
+            "Discord OAuth callback error:",
             error
         );
 
         return new Response(
-            "Unable to load transcript.",
+            "Unable to complete Discord authentication.",
             {
                 status: 500,
                 headers: {
