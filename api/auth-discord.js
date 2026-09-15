@@ -1,4 +1,10 @@
-export default async function handler(request) {
+import crypto from "crypto";
+import {
+    createStateCookie,
+    isValidReturnPath
+} from "../lib/auth.js";
+
+export async function GET(request) {
     try {
         const clientId = process.env.DISCORD_CLIENT_ID;
         const redirectUri = process.env.DISCORD_REDIRECT_URI;
@@ -9,11 +15,24 @@ export default async function handler(request) {
                 {
                     status: 500,
                     headers: {
-                        "Content-Type": "text/plain; charset=utf-8"
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
                     }
                 }
             );
         }
+
+        const requestUrl = new URL(request.url);
+
+        const requestedReturn =
+            requestUrl.searchParams.get("return");
+
+        // Default destination after login.
+        const returnPath =
+            requestedReturn &&
+            isValidReturnPath(requestedReturn)
+                ? requestedReturn
+                : "/";
 
         const state = crypto.randomUUID();
 
@@ -28,28 +47,40 @@ export default async function handler(request) {
         const discordUrl =
             `https://discord.com/oauth2/authorize?${params.toString()}`;
 
+        /*
+         * Store both the OAuth state and the original
+         * transcript URL in the state cookie.
+         */
+        const stateData = Buffer.from(
+            JSON.stringify({
+                state,
+                returnPath
+            })
+        )
+            .toString("base64url");
+
         return new Response(null, {
             status: 302,
             headers: {
                 Location: discordUrl,
-
-                // Temporary state cookie.
-                // We'll validate this in auth-callback.js.
                 "Set-Cookie":
-                    `oauth_state=${encodeURIComponent(state)}; ` +
-                    `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`
+                    createStateCookie(stateData)
             }
         });
 
     } catch (error) {
-        console.error("Discord OAuth redirect error:", error);
+        console.error(
+            "Discord OAuth redirect error:",
+            error
+        );
 
         return new Response(
             "Unable to start Discord authentication.",
             {
                 status: 500,
                 headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
+                    "Content-Type":
+                        "text/plain; charset=utf-8"
                 }
             }
         );
