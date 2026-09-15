@@ -1,4 +1,5 @@
 import crypto from "crypto";
+
 import {
     createStateCookie,
     isValidReturnPath
@@ -6,8 +7,11 @@ import {
 
 export async function GET(request) {
     try {
-        const clientId = process.env.DISCORD_CLIENT_ID;
-        const redirectUri = process.env.DISCORD_REDIRECT_URI;
+        const clientId =
+            process.env.DISCORD_CLIENT_ID;
+
+        const redirectUri =
+            process.env.DISCORD_REDIRECT_URI;
 
         if (!clientId || !redirectUri) {
             return new Response(
@@ -22,42 +26,40 @@ export async function GET(request) {
             );
         }
 
-        const requestUrl = new URL(request.url);
+        const requestUrl =
+            new URL(request.url);
 
         const requestedReturn =
             requestUrl.searchParams.get("return");
 
-        // Default destination after login.
         const returnPath =
             requestedReturn &&
             isValidReturnPath(requestedReturn)
                 ? requestedReturn
                 : "/";
 
-        const state = crypto.randomUUID();
+        const state =
+            crypto.randomUUID();
 
-        const params = new URLSearchParams({
-            client_id: clientId,
-            response_type: "code",
-            redirect_uri: redirectUri,
-            scope: "identify",
-            state
-        });
+        const stateData =
+            Buffer.from(
+                JSON.stringify({
+                    state,
+                    returnPath
+                })
+            ).toString("base64url");
+
+        const params =
+            new URLSearchParams({
+                client_id: clientId,
+                response_type: "code",
+                redirect_uri: redirectUri,
+                scope: "identify",
+                state
+            });
 
         const discordUrl =
             `https://discord.com/oauth2/authorize?${params.toString()}`;
-
-        /*
-         * Store both the OAuth state and the original
-         * transcript URL in the state cookie.
-         */
-        const stateData = Buffer.from(
-            JSON.stringify({
-                state,
-                returnPath
-            })
-        )
-            .toString("base64url");
 
         return new Response(null, {
             status: 302,
