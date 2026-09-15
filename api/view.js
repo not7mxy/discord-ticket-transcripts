@@ -1,3 +1,5 @@
+import { get } from "@vercel/blob";
+
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
@@ -14,8 +16,11 @@ export async function GET(request) {
 
         const parsedUrl = new URL(blobUrl);
 
-        // Only allow our Vercel Blob storage domain.
-        if (!parsedUrl.hostname.endsWith(".blob.vercel-storage.com")) {
+        // Only allow Vercel private Blob URLs.
+        if (
+            !parsedUrl.hostname.endsWith(".private.blob.vercel-storage.com") &&
+            !parsedUrl.hostname.endsWith(".blob.vercel-storage.com")
+        ) {
             return new Response("Invalid transcript URL.", {
                 status: 400,
                 headers: {
@@ -24,27 +29,48 @@ export async function GET(request) {
             });
         }
 
-        const response = await fetch(blobUrl);
+        // Extract the pathname from the Blob URL.
+        const pathname = parsedUrl.pathname.replace(/^\/+/, "");
 
-        if (!response.ok) {
-            return new Response("Transcript not found.", {
-                status: response.status,
+        if (!pathname) {
+            return new Response("Invalid transcript path.", {
+                status: 400,
                 headers: {
                     "Content-Type": "text/plain; charset=utf-8"
                 }
             });
         }
 
-        const html = await response.text();
+        /*
+         * AUTHENTICATION WILL GO HERE.
+         *
+         * We will check the user's Discord login + staff role
+         * before allowing this private Blob to be read.
+         */
 
-        return new Response(html, {
+        const result = await get(pathname, {
+            access: "private"
+        });
+
+        if (!result || result.statusCode !== 200) {
+            return new Response("Transcript not found.", {
+                status: 404,
+                headers: {
+                    "Content-Type": "text/plain; charset=utf-8"
+                }
+            });
+        }
+
+        return new Response(result.stream, {
             status: 200,
             headers: {
-                "Content-Type": "text/html; charset=utf-8",
+                "Content-Type": result.blob.contentType || "text/html; charset=utf-8",
                 "Content-Disposition": "inline",
-                "Cache-Control": "public, max-age=60"
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store"
             }
         });
+
     } catch (error) {
         console.error("Transcript viewer error:", error);
 
