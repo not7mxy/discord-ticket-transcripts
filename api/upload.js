@@ -1,83 +1,20 @@
-import { put } from "@vercel/blob";
-
 export async function GET() {
-    return Response.json({
-        status: "online",
-        message: "Transcript upload API is running."
-    });
-}
-
-export async function POST(request) {
     try {
-        const authHeader = request.headers.get("authorization");
-        const expectedToken = process.env.UPLOAD_SECRET;
-
-        if (!expectedToken) {
-            console.error("UPLOAD_SECRET is not configured.");
-
-            return Response.json(
-                { error: "Server configuration error." },
-                { status: 500 }
-            );
-        }
-
-        if (authHeader !== `Bearer ${expectedToken}`) {
-            return Response.json(
-                { error: "Unauthorized." },
-                { status: 401 }
-            );
-        }
-
-        const filename = request.headers.get(
-            "x-transcript-filename"
-        );
-
-        if (!filename) {
-            return Response.json(
-                { error: "Missing transcript filename." },
-                { status: 400 }
-            );
-        }
-
-        const html = await request.text();
-
-        if (!html) {
-            return Response.json(
-                { error: "Missing transcript content." },
-                { status: 400 }
-            );
-        }
-
-        const safeFilename = filename
-            .replace(/[^a-zA-Z0-9._/-]/g, "-")
-            .replace(/\/+/g, "/");
-
-        const blob = await put(
-            safeFilename,
-            html,
-            {
-                access: "public",
-                contentType: "text/html; charset=utf-8",
-                addRandomSuffix: false
-            }
-        );
+        const blob = await import("@vercel/blob");
 
         return Response.json({
-            success: true,
-            url: blob.url,
-            pathname: blob.pathname
+            status: "success",
+            message: "The Vercel Blob SDK loaded successfully.",
+            blob_sdk_loaded: !!blob.put,
+            has_blob_token: !!process.env.BLOB_READ_WRITE_TOKEN,
+            has_oidc: !!process.env.VERCEL_OIDC_TOKEN
         });
-
     } catch (error) {
-        console.error(
-            "Transcript upload failed:",
-            error
-        );
-
         return Response.json(
             {
-                error: "Failed to upload transcript.",
-                details: error instanceof Error
+                status: "error",
+                message: "The Vercel Blob SDK failed to load.",
+                error: error instanceof Error
                     ? error.message
                     : String(error)
             },
