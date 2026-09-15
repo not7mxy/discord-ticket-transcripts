@@ -1,48 +1,43 @@
 import { put } from "@vercel/blob";
 
-export default async function handler(req, res) {
-    // Only allow POST requests.
-    if (req.method !== "POST") {
-        return res.status(405).json({
-            error: "Method not allowed."
-        });
-    }
-
-    // Protect the upload endpoint.
-    const authHeader = req.headers.authorization;
-    const expectedToken = process.env.UPLOAD_SECRET;
-
-    if (!expectedToken) {
-        console.error("UPLOAD_SECRET is not configured.");
-        return res.status(500).json({
-            error: "Server configuration error."
-        });
-    }
-
-    if (authHeader !== `Bearer ${expectedToken}`) {
-        return res.status(401).json({
-            error: "Unauthorized."
-        });
-    }
-
+export async function POST(request) {
     try {
-        const filename = req.headers["x-transcript-filename"];
+        const authHeader = request.headers.get("authorization");
+        const expectedToken = process.env.UPLOAD_SECRET;
 
-        if (!filename || typeof filename !== "string") {
-            return res.status(400).json({
-                error: "Missing transcript filename."
-            });
+        if (!expectedToken) {
+            console.error("UPLOAD_SECRET is not configured.");
+            return Response.json(
+                { error: "Server configuration error." },
+                { status: 500 }
+            );
         }
 
-        const html = req.body;
+        if (authHeader !== `Bearer ${expectedToken}`) {
+            return Response.json(
+                { error: "Unauthorized." },
+                { status: 401 }
+            );
+        }
+
+        const filename = request.headers.get("x-transcript-filename");
+
+        if (!filename) {
+            return Response.json(
+                { error: "Missing transcript filename." },
+                { status: 400 }
+            );
+        }
+
+        const html = await request.text();
 
         if (!html) {
-            return res.status(400).json({
-                error: "Missing transcript content."
-            });
+            return Response.json(
+                { error: "Missing transcript content." },
+                { status: 400 }
+            );
         }
 
-        // Keep the filename safe.
         const safeFilename = filename
             .replace(/[^a-zA-Z0-9._/-]/g, "-")
             .replace(/\/+/g, "/");
@@ -57,7 +52,7 @@ export default async function handler(req, res) {
             }
         );
 
-        return res.status(200).json({
+        return Response.json({
             success: true,
             url: blob.url,
             pathname: blob.pathname
@@ -66,8 +61,24 @@ export default async function handler(req, res) {
     } catch (error) {
         console.error("Transcript upload failed:", error);
 
-        return res.status(500).json({
-            error: "Failed to upload transcript."
-        });
+        return Response.json(
+            {
+                error: "Failed to upload transcript.",
+                details: error instanceof Error
+                    ? error.message
+                    : String(error)
+            },
+            { status: 500 }
+        );
     }
+}
+
+export async function GET() {
+    return Response.json(
+        {
+            status: "online",
+            message: "Transcript upload API is running."
+        },
+        { status: 200 }
+    );
 }
