@@ -52,11 +52,11 @@ export async function POST(request) {
 
         const blob = await put(filename, body, {
             access: "private",
+            storeId: process.env.BLOB1_STORE_ID,
             contentType: "text/html; charset=utf-8",
             addRandomSuffix: true
         });
 
-        // Create a URL that goes through our protected viewer.
         const origin = new URL(request.url).origin;
 
         const viewUrl =
