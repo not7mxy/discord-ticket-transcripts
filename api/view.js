@@ -1,5 +1,4 @@
 import { get } from "@vercel/blob";
-
 import {
     getSession,
     isStaffMember
@@ -9,18 +8,27 @@ export async function GET(request) {
     try {
         const requestUrl = new URL(request.url);
 
-        // Require a logged-in Discord session.
+        /*
+         * ==========================================
+         * 1. CHECK LOGIN SESSION
+         * ==========================================
+         */
+
         const session = await getSession(request);
 
         if (!session) {
-            const authUrl = new URL(
-                "/api/auth-discord",
-                requestUrl.origin
-            );
+            const returnUrl =
+                `${requestUrl.origin}${requestUrl.pathname}${requestUrl.search}`;
+
+            const authUrl =
+                new URL(
+                    "/api/auth-discord",
+                    requestUrl.origin
+                );
 
             authUrl.searchParams.set(
                 "return",
-                `${requestUrl.origin}${requestUrl.pathname}${requestUrl.search}`
+                returnUrl
             );
 
             return new Response(null, {
@@ -32,8 +40,20 @@ export async function GET(request) {
             });
         }
 
-        // Require the user to actually have the staff role.
-        const staff = await isStaffMember(session.userId);
+        /*
+         * ==========================================
+         * 2. CHECK STAFF ROLE
+         * ==========================================
+         *
+         * This is intentionally checked EVERY time
+         * the transcript is opened.
+         *
+         * Having a session alone is NOT enough.
+         */
+
+        const staff = await isStaffMember(
+            session.userId
+        );
 
         if (!staff) {
             return new Response(
@@ -42,11 +62,19 @@ export async function GET(request) {
                     status: 403,
                     headers: {
                         "Content-Type":
-                            "text/plain; charset=utf-8"
+                            "text/plain; charset=utf-8",
+                        "Cache-Control":
+                            "no-store"
                     }
                 }
             );
         }
+
+        /*
+         * ==========================================
+         * 3. GET TRANSCRIPT URL
+         * ==========================================
+         */
 
         const blobUrl =
             requestUrl.searchParams.get("url");
@@ -81,7 +109,12 @@ export async function GET(request) {
             );
         }
 
-        // Only allow private Vercel Blob URLs.
+        /*
+         * Only allow Vercel's PRIVATE Blob URLs.
+         *
+         * Do NOT compare the hostname to BLOB1_STORE_ID.
+         */
+
         if (
             !parsedUrl.hostname.endsWith(
                 ".private.blob.vercel-storage.com"
@@ -101,7 +134,10 @@ export async function GET(request) {
 
         const pathname =
             decodeURIComponent(
-                parsedUrl.pathname.replace(/^\/+/, "")
+                parsedUrl.pathname.replace(
+                    /^\/+/,
+                    ""
+                )
             );
 
         if (!pathname) {
@@ -117,14 +153,24 @@ export async function GET(request) {
             );
         }
 
-        const { stream, blob } = await get(
+        /*
+         * ==========================================
+         * 4. FETCH PRIVATE BLOB SERVER-SIDE
+         * ==========================================
+         */
+
+        const result = await get(
             pathname,
             {
                 access: "private",
-                storeId: process.env.BLOB1_STORE_ID,
+                storeId:
+                    process.env.BLOB1_STORE_ID,
                 useCache: false
             }
         );
+
+        const stream = result.stream;
+        const blob = result.blob;
 
         if (!stream) {
             return new Response(
@@ -138,6 +184,12 @@ export async function GET(request) {
                 }
             );
         }
+
+        /*
+         * ==========================================
+         * 5. RETURN TRANSCRIPT
+         * ==========================================
+         */
 
         return new Response(stream, {
             status: 200,
