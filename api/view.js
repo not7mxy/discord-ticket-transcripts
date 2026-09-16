@@ -12,9 +12,11 @@ export async function GET(request) {
         const session = await getSession(request);
 
         if (!session) {
+            const currentUrl = new URL(request.url);
+
             const returnUrl =
-                new URL(request.url).pathname +
-                new URL(request.url).search;
+                currentUrl.pathname +
+                currentUrl.search;
 
             const loginUrl =
                 `/api/auth-discord?return=${encodeURIComponent(returnUrl)}`;
@@ -29,9 +31,6 @@ export async function GET(request) {
          * ------------------------------------------------------------
          * STAFF CHECK
          * ------------------------------------------------------------
-         *
-         * We check Discord membership/role again every time the
-         * transcript is opened.
          */
 
         const stillStaff = await isStaffMember(session.userId);
@@ -72,7 +71,22 @@ export async function GET(request) {
          * ------------------------------------------------------------
          */
 
-        const parsedUrl = new URL(blobUrl);
+        let parsedUrl;
+
+        try {
+            parsedUrl = new URL(blobUrl);
+        } catch {
+            return new Response("Invalid transcript URL.", {
+                status: 400,
+                headers: {
+                    "Content-Type": "text/plain; charset=utf-8"
+                }
+            });
+        }
+
+        /*
+         * Only accept Vercel private Blob URLs.
+         */
 
         if (
             !parsedUrl.hostname.endsWith(
@@ -88,7 +102,17 @@ export async function GET(request) {
         }
 
         /*
-         * Only allow transcripts from the private store.
+         * ------------------------------------------------------------
+         * GET PRIVATE BLOB
+         * ------------------------------------------------------------
+         *
+         * We intentionally do NOT trust the store contained in the
+         * supplied URL.
+         *
+         * The pathname is extracted from the URL, while the actual
+         * store is explicitly forced to our configured private store.
+         *
+         * OIDC authentication is provided automatically by Vercel.
          */
 
         const expectedStoreId = process.env.BLOB1_STORE_ID;
@@ -109,36 +133,14 @@ export async function GET(request) {
             );
         }
 
-        /*
-         * Make sure the URL belongs to THIS private store.
-         */
-
-        if (!parsedUrl.hostname.startsWith(`${expectedStoreId}.`)) {
-            console.error(
-                "Transcript URL belongs to an unexpected Blob store:",
-                parsedUrl.hostname
-            );
-
-            return new Response("Invalid transcript store.", {
-                status: 400,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
-            });
-        }
-
-        /*
-         * ------------------------------------------------------------
-         * GET PRIVATE BLOB
-         * ------------------------------------------------------------
-         *
-         * Vercel authenticates this through the project's OIDC
-         * connection. No BLOB_READ_WRITE_TOKEN is needed.
-         */
-
         const pathname = decodeURIComponent(
             parsedUrl.pathname.replace(/^\/+/, "")
         );
+
+        /*
+         * Transcripts uploaded by the bot should always live inside
+         * the tickets/ directory.
+         */
 
         if (!pathname.startsWith("tickets/")) {
             return new Response("Invalid transcript path.", {
@@ -155,6 +157,12 @@ export async function GET(request) {
             useCache: false
         });
 
+        /*
+         * ------------------------------------------------------------
+         * RETURN TRANSCRIPT
+         * ------------------------------------------------------------
+         */
+
         if (!result) {
             return new Response("Transcript not found.", {
                 status: 404,
@@ -163,12 +171,6 @@ export async function GET(request) {
                 }
             });
         }
-
-        /*
-         * ------------------------------------------------------------
-         * RETURN TRANSCRIPT
-         * ------------------------------------------------------------
-         */
 
         return new Response(result.stream, {
             status: 200,
