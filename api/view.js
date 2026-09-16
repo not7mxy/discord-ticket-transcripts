@@ -1,23 +1,45 @@
-import crypto from "crypto";
+import { get } from "@vercel/blob";
 
 import {
-    createStateCookie,
-    isValidReturnPath
+    getSession,
+    isStaffMember
 } from "../lib/auth.js";
 
 export async function GET(request) {
     try {
-        const clientId =
-            process.env.DISCORD_CLIENT_ID;
+        const requestUrl = new URL(request.url);
 
-        const redirectUri =
-            process.env.DISCORD_REDIRECT_URI;
+        // Require a logged-in Discord session.
+        const session = await getSession(request);
 
-        if (!clientId || !redirectUri) {
+        if (!session) {
+            const authUrl = new URL(
+                "/api/auth-discord",
+                requestUrl.origin
+            );
+
+            authUrl.searchParams.set(
+                "return",
+                `${requestUrl.origin}${requestUrl.pathname}${requestUrl.search}`
+            );
+
+            return new Response(null, {
+                status: 302,
+                headers: {
+                    Location: authUrl.toString(),
+                    "Cache-Control": "no-store"
+                }
+            });
+        }
+
+        // Require the user to actually have the staff role.
+        const staff = await isStaffMember(session.userId);
+
+        if (!staff) {
             return new Response(
-                "Discord OAuth is not configured correctly.",
+                "You do not have permission to view this transcript.",
                 {
-                    status: 500,
+                    status: 403,
                     headers: {
                         "Content-Type":
                             "text/plain; charset=utf-8"
@@ -26,58 +48,120 @@ export async function GET(request) {
             );
         }
 
-        const requestUrl =
-            new URL(request.url);
+        const blobUrl =
+            requestUrl.searchParams.get("url");
 
-        const requestedReturn =
-            requestUrl.searchParams.get("return");
+        if (!blobUrl) {
+            return new Response(
+                "Missing transcript URL.",
+                {
+                    status: 400,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
 
-        const returnPath =
-            requestedReturn &&
-            isValidReturnPath(requestedReturn)
-                ? requestedReturn
-                : "/";
+        let parsedUrl;
 
-        const state =
-            crypto.randomUUID();
+        try {
+            parsedUrl = new URL(blobUrl);
+        } catch {
+            return new Response(
+                "Invalid transcript URL.",
+                {
+                    status: 400,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
 
-        const stateData =
-            Buffer.from(
-                JSON.stringify({
-                    state,
-                    returnPath
-                })
-            ).toString("base64url");
+        // Only allow private Vercel Blob URLs.
+        if (
+            !parsedUrl.hostname.endsWith(
+                ".private.blob.vercel-storage.com"
+            )
+        ) {
+            return new Response(
+                "Invalid transcript URL.",
+                {
+                    status: 400,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
 
-        const params =
-            new URLSearchParams({
-                client_id: clientId,
-                response_type: "code",
-                redirect_uri: redirectUri,
-                scope: "identify",
-                state
-            });
+        const pathname =
+            decodeURIComponent(
+                parsedUrl.pathname.replace(/^\/+/, "")
+            );
 
-        const discordUrl =
-            `https://discord.com/oauth2/authorize?${params.toString()}`;
+        if (!pathname) {
+            return new Response(
+                "Invalid transcript path.",
+                {
+                    status: 400,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
 
-        return new Response(null, {
-            status: 302,
+        const { stream, blob } = await get(
+            pathname,
+            {
+                access: "private",
+                storeId: process.env.BLOB1_STORE_ID,
+                useCache: false
+            }
+        );
+
+        if (!stream) {
+            return new Response(
+                "Transcript not found.",
+                {
+                    status: 404,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
+                }
+            );
+        }
+
+        return new Response(stream, {
+            status: 200,
             headers: {
-                Location: discordUrl,
-                "Set-Cookie":
-                    createStateCookie(stateData)
+                "Content-Type":
+                    blob?.contentType ||
+                    "text/html; charset=utf-8",
+                "Content-Disposition":
+                    "inline",
+                "Cache-Control":
+                    "private, no-store, max-age=0",
+                "X-Content-Type-Options":
+                    "nosniff"
             }
         });
 
     } catch (error) {
         console.error(
-            "Discord OAuth redirect error:",
+            "Transcript viewer error:",
             error
         );
 
         return new Response(
-            "Unable to start Discord authentication.",
+            "Unable to load transcript.",
             {
                 status: 500,
                 headers: {
