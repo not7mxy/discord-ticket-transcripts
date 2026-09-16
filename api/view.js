@@ -1,127 +1,88 @@
-import { get } from "@vercel/blob";
-import { getSession, isStaffMember } from "../lib/auth.js";
+import crypto from "crypto";
+
+import {
+    createStateCookie,
+    isValidReturnPath
+} from "../lib/auth.js";
 
 export async function GET(request) {
     try {
-        // Require a logged-in Discord session.
-        const session = await getSession(request);
+        const clientId =
+            process.env.DISCORD_CLIENT_ID;
 
-        if (!session) {
-            return new Response("Unauthorized.", {
-                status: 401,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
+        const redirectUri =
+            process.env.DISCORD_REDIRECT_URI;
+
+        if (!clientId || !redirectUri) {
+            return new Response(
+                "Discord OAuth is not configured correctly.",
+                {
+                    status: 500,
+                    headers: {
+                        "Content-Type":
+                            "text/plain; charset=utf-8"
+                    }
                 }
-            });
+            );
         }
 
-        // Require the user to actually be staff.
-        const staff = await isStaffMember(session.userId);
+        const requestUrl =
+            new URL(request.url);
 
-        if (!staff) {
-            return new Response("Forbidden.", {
-                status: 403,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
+        const requestedReturn =
+            requestUrl.searchParams.get("return");
+
+        const returnPath =
+            requestedReturn &&
+            isValidReturnPath(requestedReturn)
+                ? requestedReturn
+                : "/";
+
+        const state =
+            crypto.randomUUID();
+
+        const stateData =
+            Buffer.from(
+                JSON.stringify({
+                    state,
+                    returnPath
+                })
+            ).toString("base64url");
+
+        const params =
+            new URLSearchParams({
+                client_id: clientId,
+                response_type: "code",
+                redirect_uri: redirectUri,
+                scope: "identify",
+                state
             });
-        }
 
-        const { searchParams } = new URL(request.url);
-        const blobUrl = searchParams.get("url");
+        const discordUrl =
+            `https://discord.com/oauth2/authorize?${params.toString()}`;
 
-        if (!blobUrl) {
-            return new Response("Missing transcript URL.", {
-                status: 400,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
-            });
-        }
-
-        let parsedUrl;
-
-        try {
-            parsedUrl = new URL(blobUrl);
-        } catch {
-            return new Response("Invalid transcript URL.", {
-                status: 400,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
-            });
-        }
-
-        // Only accept Vercel private Blob URLs.
-        if (
-            !parsedUrl.hostname.endsWith(
-                ".private.blob.vercel-storage.com"
-            )
-        ) {
-            return new Response("Invalid transcript URL.", {
-                status: 400,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
-            });
-        }
-
-        // The pathname is the Blob object key.
-        const pathname = decodeURIComponent(
-            parsedUrl.pathname.replace(/^\/+/, "")
-        );
-
-        if (!pathname) {
-            return new Response("Invalid transcript path.", {
-                status: 400,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
-            });
-        }
-
-        // Retrieve the private Blob using the server's
-        // Vercel/OIDC Blob credentials.
-        const { stream, blob } = await get(pathname, {
-            access: "private",
-            storeId: process.env.BLOB1_STORE_ID,
-            useCache: false
-        });
-
-        if (!stream) {
-            return new Response("Transcript not found.", {
-                status: 404,
-                headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
-            });
-        }
-
-        return new Response(stream, {
-            status: 200,
+        return new Response(null, {
+            status: 302,
             headers: {
-                "Content-Type":
-                    blob?.contentType ||
-                    "text/html; charset=utf-8",
-
-                "Content-Disposition": "inline",
-
-                // Don't let browsers/CDNs cache staff-only transcripts.
-                "Cache-Control": "private, no-store, max-age=0",
-
-                "X-Content-Type-Options": "nosniff"
+                Location: discordUrl,
+                "Set-Cookie":
+                    createStateCookie(stateData)
             }
         });
 
     } catch (error) {
-        console.error("Transcript viewer error:", error);
+        console.error(
+            "Discord OAuth redirect error:",
+            error
+        );
 
         return new Response(
-            "Unable to load transcript.",
+            "Unable to start Discord authentication.",
             {
                 status: 500,
                 headers: {
-                    "Content-Type": "text/plain; charset=utf-8"
+                    "Content-Type":
+                        "text/plain; charset=utf-8"
                 }
             }
         );
